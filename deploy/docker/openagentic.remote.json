@@ -1,0 +1,63 @@
+{
+  "$schema": "https://raw.githubusercontent.com/lemonhall/openagentic-sdk/main/openagentic.remote.example.json",
+  "providers": {
+    "anthropic": {
+      "kind": "anthropic",
+      "api_key_env": "ANTHROPIC_API_KEY"
+    },
+    "openai": {
+      "kind": "openai_compatible",
+      "base_url_env": "OPENAI_BASE_URL",
+      "api_key_env": "OPENAI_API_KEY",
+      "default_model": "gpt-4o"
+    },
+    "rightcode": {
+      "kind": "openai_responses",
+      "base_url_env": "RIGHTCODE_BASE_URL",
+      "api_key_env": "RIGHTCODE_API_KEY",
+      "default_model": "gpt-5.4"
+    }
+  },
+  "host": {
+    "provider": "rightcode",
+    "model": "gpt-5.4"
+  },
+  "agents": {
+    "research": {
+      "description": "研究型 Agent - 读取代码、分析问题、生成报告",
+      "prompt": "你是一个远程研究助手。读取文件、搜索、验证、综合分析，最后返回完整的研究报告。不要修改仓库文件。",
+      "tools": ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite"],
+      "provider": "rightcode",
+      "model": "gpt-5.4",
+      "executor": {
+        "kind": "k3s",
+        "node_name": "worker-0"
+      },
+      "workspace": {
+        "mode": "readonly"
+      },
+      "worker": {
+        "max_concurrent_tasks": 3,
+        "supervisor_policy": "fail_parent_tool_use"
+      }
+    },
+    "code-review": {
+      "description": "代码审查 Agent - 审查代码质量和安全问题",
+      "prompt": "你是一个代码审查专家。仔细阅读代码，发现潜在的 bug、安全问题、代码规范问题。最后返回详细的审查报告。",
+      "tools": ["Read", "Glob", "Grep", "Bash"],
+      "provider": "rightcode",
+      "model": "gpt-5.4",
+      "executor": {
+        "kind": "k3s",
+        "node_name": "worker-0"
+      },
+      "workspace": {
+        "mode": "readonly"
+      },
+      "worker": {
+        "max_concurrent_tasks": 2,
+        "supervisor_policy": "fail_parent_tool_use"
+      }
+    }
+  }
+}
