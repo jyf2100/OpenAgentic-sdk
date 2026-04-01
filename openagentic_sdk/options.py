@@ -14,12 +14,35 @@ from .tools.registry import ToolRegistry
 
 
 @dataclass(frozen=True, slots=True)
+class AgentExecutorDefinition:
+    kind: str = "local"
+    node_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentWorkspaceDefinition:
+    mode: str = "readwrite"
+
+
+@dataclass(frozen=True, slots=True)
+class AgentWorkerDefinition:
+    profile: str | None = None
+    image: str | None = None
+    max_concurrent_tasks: int = 3
+    supervisor_policy: str = "fail_parent_tool_use"
+
+
+@dataclass(frozen=True, slots=True)
 class AgentDefinition:
     description: str
     prompt: str
     tools: Sequence[str] = ()
     provider: Optional[Provider] = None
+    provider_spec: Any | None = None
     model: Optional[str] = None
+    executor: AgentExecutorDefinition = field(default_factory=AgentExecutorDefinition)
+    workspace: AgentWorkspaceDefinition = field(default_factory=AgentWorkspaceDefinition)
+    worker: AgentWorkerDefinition = field(default_factory=AgentWorkerDefinition)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +73,20 @@ class CompactionOptions:
 
     # Only apply pruning if we'd prune at least this many estimated tokens.
     min_prune_tokens: int = 20_000
+
+
+@dataclass(slots=True)
+class OpenAgenticRuntimeState:
+    runtime: Any | None = None
+    actor_registry: Any | None = None
+    actor_mailbox_store: Any | None = None
+    actor_tracing: Any | None = None
+
+    def bind_runtime(self, runtime: Any) -> None:
+        self.runtime = runtime
+        self.actor_registry = getattr(runtime, "actor_registry", None)
+        self.actor_mailbox_store = getattr(runtime, "actor_mailbox_store", None)
+        self.actor_tracing = getattr(runtime, "actor_tracing", self.actor_tracing)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +130,10 @@ class OpenAgenticOptions:
     compaction: CompactionOptions = field(default_factory=CompactionOptions)
 
     agents: Mapping[str, AgentDefinition] = field(default_factory=dict)
+    remote_task_dispatcher: Any | None = None
+    remote_chat_base_url: str | None = None
+    remote_chat_timeout_s: float = 10.0
+    runtime_state: OpenAgenticRuntimeState = field(default_factory=OpenAgenticRuntimeState)
 
     # MCP placeholders (not implemented yet)
     mcp_servers: Mapping[str, Any] | None = None

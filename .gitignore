@@ -14,6 +14,7 @@ build/
 dist/
 *.egg-info/
 .release_dist/
+third_party/jaeger-ui/node_modules/
 
 # Tool caches
 .pytest_cache/
@@ -27,9 +28,13 @@ coverage.xml
 
 # Model-driven e2e runner reports
 .openagentic_e2e_reports/
+.openagentic-rendered/
+.openagentic-rendered-smoke/
+.openagentic-rendered-local/
 
 # Local secrets (do not commit)
 .env
+.openagentic.remote.env
 
 
 .pypirc

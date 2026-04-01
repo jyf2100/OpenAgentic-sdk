@@ -14,6 +14,8 @@ from typing import Protocol, TextIO
 from openagentic_sdk.options import OpenAgenticOptions
 from openagentic_sdk.paths import default_session_root
 from openagentic_sdk.runtime import AgentRuntime
+from openagentic_sdk.server.cluster_chat_client import ClusterChatClient, ClusterChatRuntime
+from openagentic_sdk.session_tracking import capture_root_session_id
 from openagentic_sdk.sessions.store import FileSessionStore
 from openagentic_sdk.skills.index import index_skills
 
@@ -58,10 +60,57 @@ def _print(stdout: TextIO, text: str) -> None:
     stdout.flush()
 
 
+def _invalidate_pending_prompt_prefetch(*, session: object, prompt_task: asyncio.Task[object] | None) -> None:
+    if prompt_task is None or prompt_task.done():
+        return
+    app = getattr(session, "app", None)
+    invalidate = getattr(app, "invalidate", None)
+    if callable(invalidate):
+        invalidate()
+
+
+def _is_recoverable_turn_error(exc: BaseException) -> bool:
+    # Provider / remote-host failures are surfaced as RuntimeError and should only
+    # fail the current turn. Keep the REPL alive so the user can retry or continue.
+    return isinstance(exc, RuntimeError)
+
+
 _CWD_QUESTION_RE = re.compile(
     r"^\s*(?:当前目录(?:是|为)?|当前路径|pwd|where am i|current directory)\s*[?？]?\s*$",
     re.IGNORECASE,
 )
+
+
+async def _remote_host_banner(options: OpenAgenticOptions) -> str | None:
+    base_url = getattr(options, "remote_chat_base_url", None)
+    if not isinstance(base_url, str) or not base_url.strip():
+        return None
+
+    timeout_s = getattr(options, "remote_chat_timeout_s", 10.0) or 10.0
+    client = ClusterChatClient(base_url=base_url.strip(), timeout_s=min(float(timeout_s), 2.5))
+    try:
+        health = await asyncio.to_thread(client.health)
+    except Exception as e:  # noqa: BLE001
+        return f"note: remote host health preflight failed: {e}"
+
+    deployment_mode = str(health.get("deployment_mode") or "").strip().lower()
+    if deployment_mode == "smoke":
+        return "warning: remote host is smoke-only; expect deterministic smoke replies, not a real model"
+    if deployment_mode == "real-model":
+        details: list[str] = []
+        provider_profiles = health.get("provider_profiles")
+        if isinstance(provider_profiles, list):
+            names = [item for item in provider_profiles if isinstance(item, str) and item]
+            if names:
+                details.append(f"profiles={','.join(names)}")
+        host_node_name = health.get("host_node_name")
+        if isinstance(host_node_name, str) and host_node_name:
+            details.append(f"node={host_node_name}")
+        suffix = f" ({', '.join(details)})" if details else ""
+        return f"remote: real-model host{suffix}"
+    if "provider_ready" not in health and "config_source" not in health:
+        return "warning: remote host /health has no provider metadata; this usually means the smoke cluster"
+    return None
 
 
 async def run_chat_impl(
@@ -99,6 +148,12 @@ async def run_chat_impl(
             root = default_session_root()
         store = FileSessionStore(root_dir=Path(str(root)).expanduser())
     opts = replace(options, session_store=store)
+    remote_banner = await _remote_host_banner(opts)
+
+    def _make_runtime(run_opts: OpenAgenticOptions):
+        if getattr(run_opts, "remote_chat_base_url", None):
+            return ClusterChatRuntime(run_opts)
+        return AgentRuntime(run_opts)
 
     def _prompt_yes_no(prompt: str) -> bool:
         stdout.write(prompt)
@@ -177,7 +232,12 @@ async def run_chat_impl(
         from prompt_toolkit.key_binding import KeyBindings  # noqa: PLC0415
         from prompt_toolkit.output.defaults import create_output  # noqa: PLC0415
         from prompt_toolkit.patch_stdout import patch_stdout  # noqa: PLC0415
-        from .session_editor import SESSION_EDITOR_BUSY_REQUEST, SESSION_EDITOR_OPEN_REQUEST, run_session_editor  # noqa: PLC0415
+
+        from .session_editor import (  # noqa: PLC0415
+            SESSION_EDITOR_BUSY_REQUEST,
+            SESSION_EDITOR_OPEN_REQUEST,
+            run_session_editor,
+        )
 
         restore_processed: Callable[[], None] | None = None
         restore_sigint = None
@@ -213,6 +273,8 @@ async def run_chat_impl(
                     else TraceRenderer(stream=render_stream, color=False, show_hooks=debug)
                 )
 
+            if remote_banner:
+                _print(stdout, fg_red(remote_banner, enabled=enable_color) if remote_banner.startswith("warning:") else dim(remote_banner, enabled=enable_color))
             ptk_in = create_input(stdin, always_prefer_tty=True)
             ptk_out = create_output(sys.__stdout__ if stdout is sys.stdout else stdout, always_prefer_tty=True)
             session = PromptSession(input=ptk_in, output=ptk_out)
@@ -480,17 +542,14 @@ async def run_chat_impl(
                         abort_event = asyncio.Event()
                         current_abort_event = abort_event
                         run_opts = replace(opts, resume=session_id, abort_event=abort_event)
-                        runtime = AgentRuntime(run_opts)
+                        runtime = _make_runtime(run_opts)
 
                         # Prefetch the next prompt so users can type ahead while output streams.
                         if prompt_task is None:
                             prompt_task = asyncio.create_task(session.prompt_async(**_ptk_prompt_kwargs()))
 
                         async for ev in runtime.query(prompt_text):
-                            if getattr(ev, "type", None) == "system.init":
-                                sid = getattr(ev, "session_id", None)
-                                if isinstance(sid, str) and sid:
-                                    session_id = sid
+                            session_id = capture_root_session_id(session_id or "", ev) or None
                             renderer.on_event(ev)
                             if prompt_task is not None and prompt_task.done():
                                 exc = None
@@ -556,18 +615,28 @@ async def run_chat_impl(
                         # Visual separation: keep one blank line between the end of the assistant/tool output
                         # and the user's next prompt line.
                         _print(stdout, "")
+                        _invalidate_pending_prompt_prefetch(session=session, prompt_task=prompt_task)
                         current_abort_event = None
                         if session_id:
                             opts = replace(opts, resume=session_id)
                     except KeyboardInterrupt:
                         if current_abort_event is not None:
                             current_abort_event.set()
+                        current_abort_event = None
                         _print(stdout, dim("interrupted", enabled=enable_color))
                         continue
                     except SystemExit as e:
                         _print(stdout, fg_red(str(e), enabled=enable_color))
                         return 1
                     except Exception as e:  # noqa: BLE001
+                        if _is_recoverable_turn_error(e):
+                            current_abort_event = None
+                            if session_id:
+                                opts = replace(opts, resume=session_id)
+                            _print(stdout, fg_red(str(e), enabled=enable_color))
+                            _print(stdout, "")
+                            _invalidate_pending_prompt_prefetch(session=session, prompt_task=prompt_task)
+                            continue
                         _print(stdout, fg_red(str(e), enabled=enable_color))
                         return 1
             finally:
@@ -607,6 +676,8 @@ async def run_chat_impl(
 
     if backend == "legacy" and (stdin_is_tty and is_tty):
         _print(stdout, dim("note: legacy CLI input backend is deprecated (use OA_CLI_INPUT_BACKEND=prompt_toolkit)", enabled=enable_color))
+    if remote_banner:
+        _print(stdout, fg_red(remote_banner, enabled=enable_color) if remote_banner.startswith("warning:") else dim(remote_banner, enabled=enable_color))
     _print(stdout, dim("Type /help for commands.", enabled=enable_color))
     try:
         while True:
@@ -739,12 +810,9 @@ async def run_chat_impl(
                 abort_event = asyncio.Event()
                 current_abort_event = abort_event
                 run_opts = replace(opts, resume=session_id, abort_event=abort_event)
-                runtime = AgentRuntime(run_opts)
+                runtime = _make_runtime(run_opts)
                 async for ev in runtime.query(prompt_text):
-                    if getattr(ev, "type", None) == "system.init":
-                        sid = getattr(ev, "session_id", None)
-                        if isinstance(sid, str) and sid:
-                            session_id = sid
+                    session_id = capture_root_session_id(session_id or "", ev) or None
                     renderer.on_event(ev)
                     if os.name == "nt" and _windows_ctrl_c_consume():
                         abort_event.set()
@@ -755,12 +823,19 @@ async def run_chat_impl(
             except KeyboardInterrupt:
                 if current_abort_event is not None:
                     current_abort_event.set()
+                current_abort_event = None
                 _print(stdout, dim("interrupted", enabled=enable_color))
                 continue
             except SystemExit as e:
                 _print(stdout, fg_red(str(e), enabled=enable_color))
                 return 1
             except Exception as e:  # noqa: BLE001
+                if _is_recoverable_turn_error(e):
+                    current_abort_event = None
+                    if session_id:
+                        opts = replace(opts, resume=session_id)
+                    _print(stdout, fg_red(str(e), enabled=enable_color))
+                    continue
                 _print(stdout, fg_red(str(e), enabled=enable_color))
                 return 1
     finally:

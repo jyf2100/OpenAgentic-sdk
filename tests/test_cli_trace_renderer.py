@@ -1,7 +1,7 @@
 import io
 import unittest
 
-from openagentic_sdk.events import AssistantDelta, AssistantMessage, HookEvent, ToolResult, ToolUse
+from openagentic_sdk.events import AssistantDelta, AssistantMessage, HookEvent, Result, ToolResult, ToolUse
 
 
 class TestCliTraceRenderer(unittest.TestCase):
@@ -91,6 +91,131 @@ class TestCliTraceRenderer(unittest.TestCase):
         r.on_event(ToolUse(tool_use_id="t1", name="Read", input={"file_path": "x"}))
         r.on_event(ToolResult(tool_use_id="t1", output=None, is_error=True, error_message="boom"))
         self.assertIn("ERROR: boom", out.getvalue())
+
+    def test_remote_task_result_renders_dispatch_metadata(self) -> None:
+        from openagentic_cli.trace import TraceRenderer
+
+        out = io.StringIO()
+        r = TraceRenderer(stream=out, color=False)
+        r.on_event(ToolUse(tool_use_id="t1", name="Task", input={"agent": "writer", "prompt": "write a short essay"}))
+        r.on_event(
+            ToolResult(
+                tool_use_id="t1",
+                output={
+                    "dispatch_mode": "k3s",
+                    "execution_id": "exec-parent-1",
+                    "target_node": "k3d-v56-openagentic-agent-1",
+                    "worker_execution_id": "exec-123",
+                    "down": {
+                        "reason_kind": "transport_lost",
+                        "execution_id": "exec-parent-1",
+                    },
+                    "supervisor": {
+                        "action": "retry",
+                        "policy": "retry_once_on_transport_loss",
+                    },
+                },
+                is_error=False,
+            )
+        )
+
+        s = out.getvalue()
+        self.assertIn("• Subagents", s)
+        self.assertIn("[host] Delegate to `writer`", s)
+        self.assertIn("[host] dispatch_mode=k3s", s)
+        self.assertIn("execution_id=exec-parent-1", s)
+        self.assertIn("target_node=k3d-v56-openagentic-agent-1", s)
+        self.assertIn("worker_execution_id=exec-123", s)
+        self.assertIn("down=transport_lost", s)
+        self.assertIn("supervisor=retry", s)
+        self.assertIn("policy=retry_once_on_transport_loss", s)
+
+    def test_task_use_renders_prompt_preview(self) -> None:
+        from openagentic_cli.trace import TraceRenderer
+
+        out = io.StringIO()
+        r = TraceRenderer(stream=out, color=False)
+        r.on_event(ToolUse(tool_use_id="t1", name="Task", input={"agent": "writer", "prompt": "write a short essay"}))
+
+        s = out.getvalue()
+        self.assertIn("[host] Delegate to `writer`", s)
+        self.assertIn("[host] prompt: write a short essay", s)
+
+    def test_task_use_truncates_prompt_preview_after_300_chars(self) -> None:
+        from openagentic_cli.trace import TraceRenderer
+
+        long_prompt = "a" * 305 + "tail"
+        out = io.StringIO()
+        r = TraceRenderer(stream=out, color=False)
+        r.on_event(ToolUse(tool_use_id="t1", name="Task", input={"agent": "writer", "prompt": long_prompt}))
+
+        s = out.getvalue()
+        self.assertIn("[host] prompt: " + ("a" * 300) + "... ...", s)
+        self.assertNotIn("tail", s)
+
+    def test_local_task_result_is_marked_as_local(self) -> None:
+        from openagentic_cli.trace import TraceRenderer
+
+        out = io.StringIO()
+        r = TraceRenderer(stream=out, color=False)
+        r.on_event(ToolUse(tool_use_id="t1", name="Task", input={"agent": "writer", "prompt": "write a short essay"}))
+        r.on_event(
+            ToolResult(
+                tool_use_id="t1",
+                output={
+                    "execution_id": "exec-local-1",
+                    "child_session_id": "abc123",
+                    "final_text": "done",
+                    "down": {
+                        "reason_kind": "normal",
+                    },
+                    "supervisor": {
+                        "action": "accept_result",
+                        "policy": "fail_parent_tool_use",
+                    },
+                },
+                is_error=False,
+            )
+        )
+
+        s = out.getvalue()
+        self.assertIn("[host] dispatch_mode=local", s)
+        self.assertIn("execution_id=exec-local-1", s)
+        self.assertIn("child_session_id=abc123", s)
+        self.assertIn("down=normal", s)
+        self.assertIn("supervisor=accept_result", s)
+
+    def test_child_tool_trace_and_done_lines_include_agent_identity(self) -> None:
+        from openagentic_cli.trace import TraceRenderer
+
+        out = io.StringIO()
+        r = TraceRenderer(stream=out, color=False)
+        r.on_event(
+            ToolUse(
+                tool_use_id="t1",
+                name="WebSearch",
+                input={"query": "Iran March 2026"},
+                agent_name="research",
+                parent_tool_use_id="call_task",
+            )
+        )
+        r.on_event(
+            ToolResult(
+                tool_use_id="t1",
+                output={"query": "Iran March 2026", "results": [], "total_results": 0},
+                is_error=False,
+                agent_name="research",
+                parent_tool_use_id="call_task",
+            )
+        )
+        r.on_event(Result(final_text="", session_id="sid-child", stop_reason="no_output", agent_name="research"))
+        r.on_event(Result(final_text="", session_id="sid-parent", stop_reason="end"))
+
+        s = out.getvalue()
+        self.assertIn("[research] WebSearch `Iran March 2026`", s)
+        self.assertIn("[research] ok", s)
+        self.assertIn("• Done agent=research stop_reason=no_output session_id=sid-child", s)
+        self.assertIn("• Done agent=host stop_reason=end session_id=sid-parent", s)
 
 
 if __name__ == "__main__":

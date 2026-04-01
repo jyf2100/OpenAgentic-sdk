@@ -2,17 +2,33 @@ from __future__ import annotations
 
 import argparse
 
+from . import __version__
+
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="oa")
+    parser = argparse.ArgumentParser(
+        prog="oa",
+        epilog=(
+            "Common examples:\n"
+            "  oa chat --help\n"
+            "  oa chat --k3d-real\n"
+            "  oa run \"hello\"\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     # OpenCode VSCode extension parity: it invokes `opencode --port <n>`.
     # We support `oa --port <n>` as an alias of `oa serve --port <n>`.
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--host", default=None, help="Bind host (alias for `oa serve --host`; used when no subcommand)")
     parser.add_argument("--port", default=None, type=int, help="Bind port (alias for `oa serve --port`; used when no subcommand)")
     sub = parser.add_subparsers(dest="command")
 
     p_chat = sub.add_parser("chat", help="Start a multi-turn chat REPL")
     p_chat.add_argument("--resume", dest="session_id", default=None, help="Resume an existing session id")
+    chat_target = p_chat.add_mutually_exclusive_group()
+    chat_target.add_argument("--remote-host", default=None, help="Remote cluster chat host base URL (e.g. http://127.0.0.1:8766)")
+    chat_target.add_argument("--k3d-real", action="store_true", help="Auto-manage k3d real-model host port-forward for chat")
+    chat_target.add_argument("--k3d-smoke", action="store_true", help="Auto-manage k3d smoke host port-forward for chat")
 
     p_run = sub.add_parser("run", help="Run a one-shot prompt")
     p_run.add_argument("prompt", help="Prompt text")
@@ -22,6 +38,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_resume = sub.add_parser("resume", help="Resume an existing session")
     p_resume.add_argument("session_id", help="Session id to resume")
+    resume_target = p_resume.add_mutually_exclusive_group()
+    resume_target.add_argument("--remote-host", default=None, help="Remote cluster chat host base URL (e.g. http://127.0.0.1:8766)")
+    resume_target.add_argument("--k3d-real", action="store_true", help="Auto-manage k3d real-model host port-forward for resume")
+    resume_target.add_argument("--k3d-smoke", action="store_true", help="Auto-manage k3d smoke host port-forward for resume")
 
     p_logs = sub.add_parser("logs", help="Summarize session events")
     p_logs.add_argument("session_id", help="Session id to summarize")

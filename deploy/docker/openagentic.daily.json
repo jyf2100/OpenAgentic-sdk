@@ -1,0 +1,41 @@
+{
+  "providers": {
+    "anthropic": {
+      "kind": "anthropic",
+      "api_key_env": "ANTHROPIC_API_KEY"
+    },
+    "openai": {
+      "kind": "openai_compatible",
+      "base_url_env": "OPENAI_BASE_URL",
+      "api_key_env": "OPENAI_API_KEY",
+      "default_model": "gpt-4o"
+    }
+  },
+  "host": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6"
+  },
+  "agents": {
+    "translator": {
+      "description": "翻译专家 - 支持多语言互译",
+      "prompt": "你是一个专业翻译。准确、流畅、地道地翻译用户提供的文本。",
+      "tools": [],
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6"
+    },
+    "writer": {
+      "description": "写作助手 - 文章润色、创意写作",
+      "prompt": "你是一个写作专家。帮助用户润色文章、提供创意写作建议。",
+      "tools": [],
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6"
+    },
+    "researcher": {
+      "description": "研究助手 - 信息搜集、分析总结",
+      "prompt": "你是一个研究助手。帮助用户搜集信息、分析问题、总结要点。",
+      "tools": ["WebSearch", "WebFetch"],
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6"
+    }
+  }
+}

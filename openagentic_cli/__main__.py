@@ -5,19 +5,42 @@ import os
 import sys
 from pathlib import Path
 
+from openagentic_sdk.options import OpenAgenticOptions
 from openagentic_sdk.paths import default_session_root
-from openagentic_sdk.sessions.store import FileSessionStore
+from openagentic_sdk.permissions.gate import PermissionGate
 from openagentic_sdk.server.http_server import serve_http
+from openagentic_sdk.sessions.store import FileSessionStore
 
-from .auth_cmd import cmd_auth_list, cmd_auth_remove, cmd_auth_set
 from .args import build_parser
+from .auth_cmd import cmd_auth_list, cmd_auth_remove, cmd_auth_set
 from .config import build_options
+from .k3d_chat import ManagedK3dChatPortForward, resolve_k3d_chat_target
 from .logs_cmd import summarize_events
 from .mcp_cmd import cmd_mcp_auth, cmd_mcp_list, cmd_mcp_logout
-from .share_cmd import cmd_share, cmd_shared, cmd_unshare
 from .repl import run_chat
 from .run_cmd import run_once
+from .share_cmd import cmd_share, cmd_shared, cmd_unshare
 from .style import StyleConfig
+
+
+class _RemoteBridgeProvider:
+    name = "remote-chat-bridge"
+
+    async def complete(self, **kwargs):  # noqa: ANN003
+        _ = kwargs
+        raise AssertionError("remote chat bridge should not call the local provider")
+
+
+def build_remote_bridge_options(*, cwd: str, project_dir: str | None, resume: str | None, remote_host: str) -> OpenAgenticOptions:
+    return OpenAgenticOptions(
+        provider=_RemoteBridgeProvider(),
+        model="remote-chat-bridge",
+        cwd=cwd,
+        project_dir=project_dir,
+        permission_gate=PermissionGate(permission_mode="bypass"),
+        resume=resume,
+        remote_chat_base_url=remote_host,
+    )
 
 
 def default_permission_mode() -> str:
@@ -54,24 +77,51 @@ def main(argv: list[str] | None = None) -> int:
 
     if ns.command in ("chat", "resume"):
         session_id = getattr(ns, "session_id", None)
-        opts = build_options(
-            cwd=cwd,
-            project_dir=project_dir,
-            permission_mode=permission_mode,
-            resume=session_id,
-            interactive=interactive,
-        )
-        return int(
-            asyncio.run(
-                run_chat(
-                    opts,
-                    color_config=style,
-                    debug=False,
-                    stdin=sys.stdin,
-                    stdout=sys.stdout,
+        remote_host = getattr(ns, "remote_host", None)
+        k3d_mode = "real" if bool(getattr(ns, "k3d_real", False)) else "smoke" if bool(getattr(ns, "k3d_smoke", False)) else ""
+        k3d_forward: ManagedK3dChatPortForward | None = None
+        if isinstance(remote_host, str) and remote_host.strip():
+            opts = build_remote_bridge_options(
+                cwd=cwd,
+                project_dir=project_dir,
+                resume=session_id,
+                remote_host=remote_host.strip(),
+            )
+        elif k3d_mode:
+            target = resolve_k3d_chat_target(mode=k3d_mode)
+            k3d_forward = ManagedK3dChatPortForward(target=target)
+            k3d_forward.start()
+            sys.stdout.write(f"k3d: {k3d_mode} host -> {k3d_forward.base_url}\n")
+            sys.stdout.flush()
+            opts = build_remote_bridge_options(
+                cwd=cwd,
+                project_dir=project_dir,
+                resume=session_id,
+                remote_host=k3d_forward.base_url,
+            )
+        else:
+            opts = build_options(
+                cwd=cwd,
+                project_dir=project_dir,
+                permission_mode=permission_mode,
+                resume=session_id,
+                interactive=interactive,
+            )
+        try:
+            return int(
+                asyncio.run(
+                    run_chat(
+                        opts,
+                        color_config=style,
+                        debug=False,
+                        stdin=sys.stdin,
+                        stdout=sys.stdout,
+                    )
                 )
             )
-        )
+        finally:
+            if k3d_forward is not None:
+                k3d_forward.close()
 
     if ns.command == "run":
         opts = build_options(

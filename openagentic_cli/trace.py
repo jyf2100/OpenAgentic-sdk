@@ -4,8 +4,23 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Mapping, TextIO
 
+_TASK_PROMPT_PREVIEW_CHARS = 300
+
+
+def _event_actor(ev: Any) -> str:
+    agent = getattr(ev, "agent_name", None)
+    if isinstance(agent, str) and agent.strip():
+        return agent.strip()
+    return "host"
+
+
+def _label_with_actor(ev: Any, text: str) -> str:
+    return f"[{_event_actor(ev)}] {text}"
+
 
 def _tool_group(name: str) -> str:
+    if name == "Task":
+        return "Subagents"
     if name in ("Read", "Glob", "Grep", "WebFetch", "WebSearch", "SlashCommand", "Skill"):
         return "Explored"
     if name in ("Write", "Edit", "NotebookEdit", "TodoWrite"):
@@ -55,7 +70,41 @@ def _summarize_tool_use(name: str, tool_input: Mapping[str, Any] | None) -> str:
         if isinstance(n, str) and n:
             return f"Skill `{n}`"
         return "Skill"
+    if name == "Task":
+        agent = inp.get("agent")
+        if isinstance(agent, str) and agent:
+            return f"Delegate to `{agent}`"
+        return "Task"
     return name
+
+
+def _task_prompt_preview(prompt: str) -> str:
+    normalized = prompt.strip()
+    if not normalized:
+        return ""
+    preview = normalized[:_TASK_PROMPT_PREVIEW_CHARS]
+    if len(normalized) > _TASK_PROMPT_PREVIEW_CHARS:
+        return preview + "... ..."
+    return preview
+
+
+def _summarize_tool_use_details(name: str, tool_input: Mapping[str, Any] | None) -> list[str]:
+    inp = tool_input or {}
+    if name != "Task":
+        return []
+
+    prompt = inp.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return []
+
+    preview = _task_prompt_preview(prompt)
+    if not preview:
+        return []
+
+    lines = preview.splitlines()
+    if len(lines) == 1:
+        return [f"prompt: {lines[0]}"]
+    return ["prompt:", *lines]
 
 
 def _summarize_tool_result(
@@ -116,6 +165,43 @@ def _summarize_tool_result(
         if isinstance(lr, int) and isinstance(tl, int):
             return [f"lines={lr}/{tl}", f"file={fp}"] if isinstance(fp, str) and fp else [f"lines={lr}/{tl}"]
         return ["ok"]
+
+    if name == "Task" and isinstance(output, dict):
+        dispatch_mode = output.get("dispatch_mode")
+        execution_id = output.get("execution_id")
+        target_node = output.get("target_node")
+        worker_execution_id = output.get("worker_execution_id")
+        child_session_id = output.get("child_session_id")
+        down = output.get("down")
+        supervisor = output.get("supervisor")
+
+        lines: list[str] = []
+        if isinstance(dispatch_mode, str) and dispatch_mode:
+            lines.append(f"dispatch_mode={dispatch_mode}")
+        elif isinstance(child_session_id, str) and child_session_id:
+            lines.append("dispatch_mode=local")
+
+        if isinstance(execution_id, str) and execution_id:
+            lines.append(f"execution_id={execution_id}")
+        if isinstance(target_node, str) and target_node:
+            lines.append(f"target_node={target_node}")
+        if isinstance(worker_execution_id, str) and worker_execution_id:
+            lines.append(f"worker_execution_id={worker_execution_id}")
+        if isinstance(child_session_id, str) and child_session_id:
+            lines.append(f"child_session_id={child_session_id}")
+        if isinstance(down, dict):
+            reason_kind = down.get("reason_kind")
+            if isinstance(reason_kind, str) and reason_kind:
+                lines.append(f"down={reason_kind}")
+        if isinstance(supervisor, dict):
+            action = supervisor.get("action")
+            policy = supervisor.get("policy")
+            if isinstance(action, str) and action:
+                lines.append(f"supervisor={action}")
+            if isinstance(policy, str) and policy:
+                lines.append(f"policy={policy}")
+
+        return lines or ["ok"]
 
     return ["ok"]
 
@@ -193,7 +279,12 @@ class TraceRenderer:
             prefix = "  └ " if self._group_count == 0 else "    "
             self._group_count += 1
             summary = _summarize_tool_use(name, tool_input if isinstance(tool_input, dict) else None)
-            self.stream.write(prefix + summary + "\n")
+            self.stream.write(prefix + _label_with_actor(ev, summary) + "\n")
+            details = _summarize_tool_use_details(name, tool_input if isinstance(tool_input, dict) else None)
+            for i, detail in enumerate(details):
+                detail_prefix = "    └ " if i == 0 else "      "
+                detail_line = _label_with_actor(ev, detail) if i == 0 else detail
+                self.stream.write(detail_prefix + detail_line + "\n")
             self.stream.flush()
             return
 
@@ -215,14 +306,15 @@ class TraceRenderer:
             )
             for i, ln in enumerate(lines):
                 prefix = "    └ " if i == 0 else "      "
-                self.stream.write(prefix + ln + "\n")
+                line = _label_with_actor(ev, ln) if i == 0 else ln
+                self.stream.write(prefix + line + "\n")
             self.stream.flush()
             return
 
         if t == "result":
             stop_reason = getattr(ev, "stop_reason", None)
             session_id = getattr(ev, "session_id", None)
-            line = "• Done"
+            line = f"• Done agent={_event_actor(ev)}"
             if isinstance(stop_reason, str) and stop_reason:
                 line += f" stop_reason={stop_reason}"
             if isinstance(session_id, str) and session_id:
