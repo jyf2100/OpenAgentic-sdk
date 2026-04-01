@@ -1,0 +1,38 @@
+# deploy/docker/docker-compose.daily.yml
+services:
+  host:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.daily
+    image: oa-daily:latest
+    container_name: oa-daily-host
+    ports:
+      - "${HOST_PORT:-8766}:8766"
+    volumes:
+      - oa-sessions:/home/user/.openagentic/sessions
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8766/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  web:
+    image: nginx:alpine
+    container_name: oa-daily-web
+    ports:
+      - "${WEB_PORT:-3001}:80"
+    volumes:
+      - ./web/dist:/usr/share/nginx/html:ro
+      - ./nginx.daily.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      host:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  oa-sessions:
