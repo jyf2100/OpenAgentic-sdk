@@ -1,0 +1,27 @@
+# Dockerfile.host - OpenAgentic SDK Host 镜像
+# 构建命令: docker build -f deploy/docker/Dockerfile.host -t oa-host .
+FROM python:3.12-slim
+
+WORKDIR /workspace
+
+# 安装系统依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制并安装 SDK
+COPY pyproject.toml ./pyproject.toml
+COPY openagentic_sdk ./openagentic_sdk
+RUN pip install --no-cache-dir -e .
+
+EXPOSE 8766
+
+# 默认参数
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -sf http://localhost:8766/health || exit 1
+
+ENTRYPOINT ["python", "-u", "-m", "openagentic_sdk.server.cluster_chat_host"]
+CMD ["--host", "0.0.0.0", "--port", "8766"]

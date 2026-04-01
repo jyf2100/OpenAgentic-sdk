@@ -20,10 +20,36 @@ export function useEventStream(sessionId: string | null) {
   useEffect(() => {
     const connect = () => {
       const es = connectEventStream(
-        (event) => {
+        (rawEvent) => {
+          console.log('[SSE] 收到原始事件:', rawEvent);
+          // 解析嵌套事件格式: {type: "session.event", session_id: "...", event: {...}}
+          let actualEvent: Event;
+          if (rawEvent.type === 'session.event' && rawEvent.event) {
+            // 提取实际事件
+            actualEvent = rawEvent.event as Event;
+            console.log('[SSE] 提取嵌套事件:', actualEvent);
+          } else if (rawEvent.type === 'server.connected' || rawEvent.type === 'server.heartbeat') {
+            // 忽略心跳和连接事件
+            console.log('[SSE] 心跳事件，忽略');
+            return;
+          } else {
+            actualEvent = rawEvent;
+          }
+
           // 只处理当前会话的事件
-          if (event.session_id === sessionId || !event.session_id) {
-            setEvents(prev => [...prev, event]);
+          const eventSessionId = rawEvent.session_id;
+          console.log('[SSE] 当前会话:', sessionId, '事件会话:', eventSessionId);
+          if (eventSessionId === sessionId || !eventSessionId) {
+            setEvents(prev => {
+              // 避免重复 (只有 seq 有效时才检查)
+              const seq = actualEvent.seq;
+              if (seq != null && prev.some(e => e.seq === seq)) {
+                console.log('[SSE] 重复事件，跳过');
+                return prev;
+              }
+              console.log('[SSE] 添加事件到列表:', actualEvent.type);
+              return [...prev, actualEvent];
+            });
           }
         },
         (error) => {

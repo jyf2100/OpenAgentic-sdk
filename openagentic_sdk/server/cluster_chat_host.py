@@ -185,6 +185,22 @@ class ClusterChatHostServer:
                     if host_node_name:
                         payload["host_node_name"] = host_node_name
                     payload.update(health_status)
+                    # 添加 agents 信息，按 worker 分组
+                    agents_by_worker: dict[str, list[dict[str, Any]]] = {}
+                    for agent_name, agent_def in options.agents.items():
+                        node_name = "default"
+                        if hasattr(agent_def, "executor") and agent_def.executor:
+                            node_name = getattr(agent_def.executor, "node_name", "default") or "default"
+                        if node_name not in agents_by_worker:
+                            agents_by_worker[node_name] = []
+                        agents_by_worker[node_name].append({
+                            "name": agent_name,
+                            "description": getattr(agent_def, "description", "") or "",
+                            "model": getattr(agent_def, "model", options.model) or options.model,
+                            "tools": list(getattr(agent_def, "tools", []) or []),
+                            "node_name": node_name,
+                        })
+                    payload["workers"] = agents_by_worker
                     _write_json(self, 200, payload)
                     return
 

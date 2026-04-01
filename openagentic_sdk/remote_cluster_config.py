@@ -89,12 +89,17 @@ def build_remote_cluster_routing_system_prompt(agents: Mapping[str, AgentDefinit
         "Routing policy:",
         "- If the user explicitly names an agent, obey that choice when the agent exists.",
         "- Do not ask the user whether to delegate; decide that yourself.",
+        "- ALWAYS use the Task tool to delegate to a remote agent when the task involves reading, "
+        "searching, analyzing, or modifying code/files in the repository. The Host's local tools "
+        "are restricted to the Host machine; remote agents run in Workers with the correct "
+        "repository paths. Never use Read/List/Glob/Grep/Edit/Write/Bash locally when a remote "
+        "agent can do the job.",
     ]
     if research_agents:
         lines.append(
-            "- Delegate open-ended research, latest/current events, ongoing situations, external fact gathering, "
-            f"or online investigation to {_format_agent_names(research_agents)} before doing host-side "
-            "WebSearch/WebFetch yourself."
+            "- For all code research, analysis, reading, searching, and investigation tasks, "
+            f"delegate to {_format_agent_names(research_agents)} using the Task tool. "
+            "Do NOT use WebSearch/WebFetch/Read/List/Glob/Grep locally."
         )
     if writer_agents:
         lines.append(

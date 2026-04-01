@@ -25,7 +25,7 @@
   "agents": {
     "research": {
       "description": "研究型 Agent - 读取代码、分析问题、生成报告",
-      "prompt": "你是一个远程研究助手。读取文件、搜索、验证、综合分析，最后返回完整的研究报告。不要修改仓库文件。",
+      "prompt": "你是一个远程研究助手。所有文件操作请使用 /workspace/repo 作为项目根目录（如 /workspace/repo/README.md）。读取文件、搜索、验证、综合分析，最后返回完整的研究报告。不要修改仓库文件。",
       "tools": ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite"],
       "provider": "rightcode",
       "model": "gpt-5.4",

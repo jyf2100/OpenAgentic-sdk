@@ -39,6 +39,14 @@ export interface TokenUsage {
   total: number;
 }
 
+export interface AgentConfig {
+  name: string;
+  description: string;
+  model: string;
+  tools?: string[];
+  node_name: string;
+}
+
 export interface WorkerStatus {
   ok: boolean;
   node_name?: string;
@@ -46,6 +54,17 @@ export interface WorkerStatus {
   provider_profiles?: string[];
   cwd?: string;
   git_revision?: string;
+  deployment_mode?: string;
+  workers?: Record<string, AgentConfig[]>;
 }
 
 export type ConnectionState = 'connected' | 'reconnecting' | 'offline';
+
+export interface AgentConfig {
+  name: string;
+  description: string;
+  model: string;
+  tools?: string[];
+  node_name: string;
+}
+
