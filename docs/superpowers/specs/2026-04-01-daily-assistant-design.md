@@ -198,7 +198,143 @@ def get_available_agents() -> dict[str, list[AgentConfig]]:
     return merge_agent_configs(static_agents, dynamic_workers)
 ```
 
-### 3.3 Health 端点简化
+#### 3.2.5 Agent 路由逻辑
+
+当 Host 收到用户消息需要分发到 Agent 时，需要确定目标 Worker：
+
+```python
+# 路由数据结构
+agent_to_worker: dict[str, str] = {}  # agent_name -> node_name
+worker_urls: dict[str, str] = {}      # node_name -> base_url
+
+def register_worker(node_name: str, base_url: str, agents: list[AgentConfig]):
+    worker_urls[node_name] = base_url
+    for agent in agents:
+        agent_to_worker[agent.name] = node_name
+
+def get_worker_url_for_agent(agent_name: str) -> str | None:
+    node_name = agent_to_worker.get(agent_name)
+    if node_name:
+        return worker_urls.get(node_name)
+    return None
+
+# 分发逻辑
+async def dispatch_to_agent(agent_name: str, prompt: str, session_id: str):
+    worker_url = get_worker_url_for_agent(agent_name)
+    if not worker_url:
+        raise AgentNotFoundError(f"No worker registered for agent: {agent_name}")
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{worker_url}/task",
+            json={"agent": agent_name, "prompt": prompt, "session_id": session_id}
+        )
+        return response.json()
+```
+
+### 3.3 Worker 端注册客户端
+
+#### 3.3.1 worker_register_client.py
+
+```python
+"""Worker 注册客户端 - 负责向 Host 注册并维持心跳"""
+import asyncio
+import httpx
+from dataclasses import dataclass
+
+@dataclass
+class WorkerConfig:
+    node_name: str
+    base_url: str
+    register_url: str
+    agents: list[dict]
+    heartbeat_interval_s: float = 30.0
+
+class WorkerRegisterClient:
+    def __init__(self, config: WorkerConfig):
+        self.config = config
+        self.client = httpx.AsyncClient()
+        self.running = False
+
+    async def register(self) -> bool:
+        """向 Host 注册 Worker"""
+        try:
+            response = await self.client.post(
+                self.config.register_url,
+                json={
+                    "node_name": self.config.node_name,
+                    "base_url": self.config.base_url,
+                    "agents": self.config.agents,
+                },
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                print(f"[Worker] Registered successfully: {self.config.node_name}")
+                return True
+            else:
+                print(f"[Worker] Registration failed: {response.status_code}")
+                return False
+        except Exception as e:
+            print(f"[Worker] Registration error: {e}")
+            return False
+
+    async def heartbeat(self) -> bool:
+        """发送心跳"""
+        try:
+            response = await self.client.post(
+                f"{self.config.register_url.rsplit('/', 1)[0]}/heartbeat",
+                json={"node_name": self.config.node_name},
+                timeout=5.0,
+            )
+            return response.status_code == 200
+        except Exception as e:
+            print(f"[Worker] Heartbeat error: {e}")
+            return False
+
+    async def unregister(self):
+        """取消注册"""
+        try:
+            await self.client.post(
+                f"{self.config.register_url.rsplit('/', 1)[0]}/unregister",
+                json={"node_name": self.config.node_name},
+                timeout=5.0,
+            )
+        except Exception:
+            pass
+
+    async def run_forever(self):
+        """注册并持续发送心跳"""
+        # 首次注册（带重试）
+        for attempt in range(5):
+            if await self.register():
+                break
+            await asyncio.sleep(2 ** attempt)  # 指数退避
+        else:
+            raise RuntimeError("Failed to register after 5 attempts")
+
+        self.running = True
+        try:
+            while self.running:
+                await asyncio.sleep(self.config.heartbeat_interval_s)
+                await self.heartbeat()
+        finally:
+            await self.unregister()
+```
+
+#### 3.3.2 错误处理
+
+```python
+# Worker 行为
+# - 注册失败：指数退避重试，最多 5 次，然后退出
+# - 心跳失败：继续运行，下次心跳再试
+# - 收到 SIGTERM：先 unregister 再退出
+
+# Host 行为
+# - 重复 node_name 注册：覆盖旧记录，日志警告
+# - 心跳超时 (>90s)：标记 offline，保留记录 5 分钟后删除
+```
+
+### 3.4 Health 端点简化
 
 **Response 示例**:
 ```json
@@ -415,15 +551,72 @@ Web UI 代码完全复用，只需确保：
 
 无需修改前端代码。
 
+### 6.1 Web UI 构建
+
+Web UI 源码位于 `deploy/docker/web/`，构建步骤：
+
+```bash
+cd deploy/docker/web
+npm install
+npm run build
+# 产物生成到 deploy/docker/web/dist/
+```
+
+docker-compose.daily.yml 中的 web 服务直接挂载构建产物。
+
+### 6.2 nginx.conf
+
+```nginx
+# nginx.conf - Daily Assistant Web UI 代理
+server {
+    listen 80;
+
+    # 静态文件
+    location / {
+        root /usr/share/nginx/html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # API 代理到 Host
+    location /session {
+        proxy_pass http://host:8766;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # SSE 事件流
+    location /event {
+        proxy_pass http://host:8766;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Connection '';
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding off;
+    }
+
+    # Health 检查
+    location /health {
+        proxy_pass http://host:8766;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+}
+```
+
 ## 7. 文件变更清单
 
 | 操作 | 文件路径 | 说明 |
 |------|----------|------|
-| 新建 | `openagentic_sdk/server/cluster_chat_host_daily.py` | 精简版 Host |
-| 新建 | `openagentic_sdk/server/worker_registry.py` | Worker 注册模块 |
-| 新建 | `deploy/docker/Dockerfile.daily` | 日常版 Dockerfile |
+| 新建 | `openagentic_sdk/server/cluster_chat_host_daily.py` | 精简版 Host（无 Git 同步） |
+| 新建 | `openagentic_sdk/server/worker_registry.py` | Host 端 Worker 注册管理 |
+| 新建 | `openagentic_sdk/server/worker_register_client.py` | Worker 端注册客户端 |
+| 新建 | `deploy/docker/Dockerfile.daily` | 日常版 Host Dockerfile |
 | 新建 | `deploy/docker/docker-compose.daily.yml` | 日常版 compose |
-| 新建 | `deploy/docker/openagentic.daily.json` | 日常版配置 |
+| 新建 | `deploy/docker/openagentic.daily.json` | 日常版配置文件 |
+| 新建 | `deploy/docker/nginx.daily.conf` | 日常版 nginx 配置 |
 | 复用 | `deploy/docker/web/*` | Web UI 无改动 |
 | 复用 | `deploy/docker/Dockerfile.worker` | Worker 镜像复用 |
 
