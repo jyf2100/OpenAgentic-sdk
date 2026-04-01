@@ -1,0 +1,63 @@
+# docker-compose.yml - OpenAgentic SDK Host + Worker 部署
+services:
+  host:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.host
+    image: oa-host:latest
+    working_dir: /workspace
+    container_name: oa-host
+    ports:
+      - "${HOST_PORT:-8766}:8766"
+    volumes:
+      - ${CODE_PATH:-..}:/workspace/repo:ro
+      - host-sessions:/tmp/sessions
+    environment:
+      - PYTHONPATH=/workspace/repo
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      # LLM Provider 配置
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - RIGHTCODE_API_KEY=${RIGHTCODE_API_KEY:-}
+      - RIGHTCODE_BASE_URL=${RIGHTCODE_BASE_URL:-}
+      # OpenTelemetry (可选)
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+      - OTEL_SERVICE_NAME=oa-host
+    restart: unless-stopped
+    command: >
+      --host 0.0.0.0
+      --port 8766
+      --repo-root /workspace/repo
+      --session-root /tmp/sessions
+      --remote-config /workspace/repo/deploy/docker/openagentic.remote.json
+      --node-url worker-0=http://100.94.80.121:19000
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8766/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # Web UI 服务
+  web:
+    image: nginx:alpine
+    container_name: oa-web
+    ports:
+      - "${WEB_PORT:-3000}:80"
+    volumes:
+      - ./web/dist:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - host
+    restart: unless-stopped
+
+volumes:
+  host-sessions:
