@@ -93,7 +93,7 @@ class WorkerRegisterClient:
 
         self._running = True
 
-        def handle_signal(signum, frame):
+        def handle_signal(_signum, _frame):
             self._running = False
 
         signal.signal(signal.SIGTERM, handle_signal)

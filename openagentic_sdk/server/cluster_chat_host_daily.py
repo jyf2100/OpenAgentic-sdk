@@ -526,7 +526,7 @@ def main(argv: list[str] | None = None) -> int:
     worker_registry = WorkerRegistry()
 
     if args.remote_config:
-        options, session_store, health_status = build_daily_host_from_config(
+        options, session_store, worker_registry, health_status = build_daily_host_from_config(
             repo_root=args.repo_root,
             session_root=args.session_root,
             remote_config_path=args.remote_config,

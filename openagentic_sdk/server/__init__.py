@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib import import_module
+from typing import TYPE_CHECKING
 
 __all__ = [
     "OpenAgenticHttpServer",
@@ -14,6 +15,15 @@ __all__ = [
     "WorkerRegisterClient",
     "WorkerConfig",
 ]
+
+# Type annotations for pyright
+if TYPE_CHECKING:
+    from .cluster_chat_client import ClusterChatClient, ClusterChatRuntime
+    from .cluster_chat_host import ClusterChatHostServer
+    from .cluster_chat_host_daily import DailyHostServer
+    from .worker_registry import WorkerInfo, WorkerRegistry
+    from .worker_register_client import WorkerConfig, WorkerRegisterClient
+    from .http_server import OpenAgenticHttpServer, serve_http
 
 
 def __getattr__(name: str):
