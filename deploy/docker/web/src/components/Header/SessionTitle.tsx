@@ -23,7 +23,13 @@ export function SessionTitle({ title, onRename }: Props) {
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onBlur={handleSubmit}
-        onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') handleSubmit();
+          if (e.key === 'Escape') {
+            setValue(title);
+            setEditing(false);
+          }
+        }}
         className="bg-card px-2 py-1 rounded text-text outline-none border border-accent"
         autoFocus
       />
